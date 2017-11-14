@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="container">
+	<h1 class="text-center"> <small> Meeting </small></h1>
+	<ul class="nav nav-tabs">
+		<li class="active"><a data-toggle="tab" href="#calendar_menu">Select Calendars</a></li>
+		<li ><a data-toggle="tab" href="#meeting_menu">Meeting Info</a></li>
+	</ul>
+	<div class="tab-content">
+		<div id="calendar_menu" class="tab-pane fade in active">
+			<div class="form-group">
+				<form action="/_get_user_calendars" method="POST">
+					<input type="submit" value="Get Calendars" />
+				</form>
+			</div>
+
+			{% if g.calendars is defined %}
+			<div class="form-group">
+				<form action="/_select_calendars" method="POST">
+				{% for cal in g.calendars %}
+	  				<input type="checkbox" id="calendarList" name="calendarList[]" value="{{ cal.id }}" /> {{ cal.summary }}
+				{% endfor %}
+					<br>
+					<input type="hidden" name="meeting_planner_hash" id="meeting_planner_hash" value="{{ g.meeting_hash }}" />
+					<input type="submit" value="Submit" />
+				</form>
+			</div>
+			{% endif %}
+
+			{% if session.free_times is defined %}
+				Your busy times:
+				<table class="table">
+					<thead>
+						<th>Start</th>
+						<th>End</th>
+					</thead>
+					<tbody>
+						{% for event in session.free_times %}
+						<tr>
+							<td>{{ event['start'] }}</td>
+							<td>{{ event['end'] }}</td>
+						{% endfor %}
+					</tbody>
+				</table>
+			{% endif %}
+		</div>
+	</div>
+
+
+	<div class="tab-content">
+		<div id="meeting_menu" class="tab-pane">
+
+		</div>
+	</div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+
+<script type="text/javascript">
+$(function() {
+	$('#address_book_entries_table > tbody').sortable({
+		update: function(event, ui) {
+			set_recent_changes();
+		}
+	});
+
+	$('#force_save_button').on('click', function() {
+		$('#force_save_switch').val('1');
+		$('#address_book_entries_form').trigger('submit');
+	});
+
+	$('input').on('change', function() {
+		set_recent_changes();
+	});
+
+
+	$('#return_home_button').on('click', function() {
+		if(get_recent_changes() == "1") $('#return_home_modal').modal('toggle');
+		else go_home();
+	});
+
+
+
+	$('form[id="participants_form"]').submit(function(e) {
+		$.ajax({
+			type: "POST",
+			url: $(this).attr('action'),
+			context: $(this),
+			data: $(this).closest('form').serialize(),
+			dataType: "json",
+			complete: function() {
+
+			},
+			success: function (result) {
+				showError(result);
+			}
+		});
+		e.preventDefault();
+	});
+
+	$('form[id="address_book_entries_form"]').submit(function(e) {
+		fields = [];
+		entries = [];
+
+		/* Using the <th> of the entries table, formulate a list of all the fields */
+		$('#address_book_entries_table > thead > tr:first > th:not(:first-child)').each(function (i, table_header) {
+			fields.push($(table_header).html());
+		});
+
+		/* Iterate through each row of the entries list and create a list per entry. Each sublist
+		is composed of the row's columns. */
+		$('#address_book_entries_table > tbody > tr').each(function (i, table_row) {
+			entry_fields = [];
+			$(table_row).find('td:not(:first-child)').each(function (i2, table_column) {
+				input_box = $(table_column).find('input');
+				if(!input_box.length) return true;
+
+				var input_value = $(input_box[0]).val();
+
+				//Special character stripping for phone numbers.
+				if($(input_box[0]).attr('field') == "phone") {
+					input_value = input_value.replace(/[- )(]/g,'');
+				}
+				entry_fields.push(input_value);
+			});
+			if(!entry_fields.length) return true;
+
+			entries.push(entry_fields);
+		});
+
+		var force_save_switch = $('#force_save_switch').val();
+
+		$.ajax({
+			type: "POST",
+			url: "/_update_address_book_entries",
+			context: $(this),
+			data: {
+				"fields": JSON.stringify(fields),
+				"entries": JSON.stringify(entries),
+				"address_book_hash": $("#address_book_hash").val(),
+				"force_save": force_save_switch
+			},
+			dataType: "json",
+			complete: function() {
+
+			},
+			success: function (result) {
+				if('error' in result) {
+					if(force_save_switch == "0") {
+						$('#save_errors_table > tbody').empty();
+
+						result['errors'].forEach(function(error) {
+							$('#save_errors_table > tbody')
+								.append($('<tr>')
+									.append($('<td>')
+										.html(error['entry_id'])
+									)
+									.append($('<td>')
+										.html(error['message'])
+									)
+								);
+						});
+
+						$('#force_save_modal').modal('show');
+					}
+					unset_recent_changes();
+				} else showError(result);
+				$("#force_save_switch").val('0');
+			}
+		});
+		e.preventDefault();
+	});
+
+	$('#add_entries_button').click(function() {
+		var table = $(this).closest('form').find('table');
+
+		new_row_html = '<td><button data-toggle="modal" data-target="#delete_row_modal" onClick="delete_confirm(this)" type="button" class="btn btn-danger">Delete</button></td>';
+
+		{% for book_field in g.address_book_fields %}
+			new_row_html += '<td><input class="form-control" type="text" name="address_book_entries_{{ loop.index0 }}[]" value="" /></td>';
+		{% endfor %}
+
+		new_row = $('<tr>').html(new_row_html);
+		table.find('tbody').append(new_row);
+	});
+});
+</script>
+{% endblock %}
