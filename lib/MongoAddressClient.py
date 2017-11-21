@@ -81,7 +81,9 @@ class MongoAddressClient(object):
             "name": name,
             "description": description,
             "instructor_id": ObjectId(instructor_id),
-            "participants": participants
+            "participants": participants,
+            "meeting_start": "",
+            "meeting_end": ""
         }
         meeting_id = str(self.db_client.meetings.insert(record))
         self.add_meeting_for_instructor(instructor_id=instructor_id,
@@ -179,6 +181,16 @@ class MongoAddressClient(object):
 
         return record if record else None
 
+    def get_meeting_owner(self,
+                          meeting_id):
+
+        find_query = {
+            "_id": ObjectId(meeting_id)
+        }
+
+        record = self.db_client.meetings.find_one(find_query)
+
+        return str(record['instructor_id']) if record else None
 
     def get_meetings_list(self,
                           registered_id):
@@ -218,7 +230,20 @@ class MongoAddressClient(object):
         return meetings
 
     def get_calendar_data(self,
+                          registered_id,
                           meeting_id):
+        find_query = {
+            "registered_id": registered_id,
+            "meeting_id": meeting_id
+        }
+
+        record = self.db_client.calendar_data.find_one(find_query)
+
+        return record if record else None
+
+
+    def get_all_calendar_data(self,
+                              meeting_id):
         find_query = {
             "meeting_id": meeting_id
         }
@@ -290,6 +315,7 @@ class MongoAddressClient(object):
 
     def update_calendar_times(self,
                               meeting_id,
+                              email,
                               registered_id,
                               free_times):
 
@@ -301,6 +327,7 @@ class MongoAddressClient(object):
         update_query = {
             "$set": {
                 "meeting_id": meeting_id,
+                "email": email,
                 "registered_id": registered_id,
                 "free_times": free_times
             }
@@ -331,6 +358,39 @@ class MongoAddressClient(object):
 
         self.db_client.meetings.update_one(where_query, update_query)
 
+    def update_meeting_description(self,
+                                   meeting_id,
+                                   description):
+
+        where_query = {
+            "_id": ObjectId(meeting_id)
+        }
+
+        update_query = {
+            "$set": {
+                "description": description
+            }
+        }
+
+        self.db_client.meetings.update_one(where_query, update_query)
+
+    def update_meeting_range(self,
+                             meeting_id,
+                             meeting_start,
+                             meeting_end):
+
+        where_query = {
+            "_id": ObjectId(meeting_id)
+        }
+
+        update_query = {
+            "$set": {
+                "meeting_start": meeting_start,
+                "meeting_end": meeting_end
+            }
+        }
+
+        self.db_client.meetings.update_one(where_query, update_query)
 
 
     def remove_meeting_for_user(self,

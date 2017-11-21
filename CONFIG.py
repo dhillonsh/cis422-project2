@@ -1,2 +1,2 @@
 cipher_key = "abc"
-secret_key = "test"
+secret_key = "tets"

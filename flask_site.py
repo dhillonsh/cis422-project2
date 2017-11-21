@@ -1,3 +1,10 @@
+# FIXME: Users should see the instructors calendar if available
+# FIXME: finalizing meetings should add events to all participant calendars (more information needs to be stored in the database to remember calendars)
+# FIXME: if meeting range changes, wipe all Calendar data
+# FIXME: Add `location` to calendar_data table
+# FIXME: Adjust algorithm to work with arbitrary meeting length, instead of fixed 15 minutes
+# FIXME: Better redirect when gcal not authenticated
+
 """
 Flask application for creating/handling address books.
 """
@@ -9,23 +16,14 @@ import re
 import copy
 from urllib.parse import urlparse, urljoin, quote_plus, unquote_plus
 
-
-# OAuth2  - Google library implementation for convenience
-from oauth2client import client
-import httplib2   # used in oauth2 flow
-
 import arrow
 from dateutil import tz
 
-# Google API for services 
-from apiclient import discovery
-
-
-# For CSV writing
-from lib.CSVAddressBook import CSVAddressBook
 
 from lib.MongoAddressClient import MongoAddressClient
+from lib.EventSchedules import EventSchedules
 from lib.Security import SecureCipher
+from lib.GoogleAPIService import GoogleAPIService
 
 from lib.secrets import admin_secrets
 import CONFIG
@@ -41,9 +39,7 @@ except Exception as exception:
     sys.exit(1)
 
 CIPHER = SecureCipher(CONFIG.cipher_key)
-SCOPES_MODIFY = 'https://www.googleapis.com/auth/calendar'
-SCOPES_READONLY = 'https://www.googleapis.com/auth/calendar.readonly'
-CLIENT_SECRET_FILE = admin_secrets.google_key_file
+GoogleAPI = GoogleAPIService(google_key_file=admin_secrets.google_key_file)
 
 APP = flask.Flask(__name__)
 APP.secret_key = CONFIG.secret_key
@@ -69,10 +65,13 @@ def is_instructor():
 def before_request_handler():
     """Special handler that is processed before a request is processed.
     """
-    flask.g.error = flask.session['error'] if 'error' in flask.session else None
-    flask.session['error'] = None
+    flask.g.redirect_message = flask.session['redirect_message'] if 'redirect_message' in flask.session else None
+    flask.session['redirect_message'] = None
 
     flask.g.is_logged_in = is_logged_in()
+
+    if('credentials' in flask.session and flask.session['credentials']):
+        GoogleAPI.set_credentials(credentials=flask.session['credentials'])
 
 
 ##############################
@@ -88,7 +87,7 @@ def index(error=None):
     create a new one.
 
     """
-    #MONGO_CLIENT.add_instructor(username="instructor", password="password", is_admin=1)
+    #MONGO_CLIENT.add_instructor(username="instructor_a", password="password", is_admin=1)
 
     flask.g.error = request.args.get('error') if 'error' in request.args else None
 
@@ -100,7 +99,6 @@ def index(error=None):
             meeting['hash'] = quote_plus(CIPHER.encrypt(str(meeting['_id'])))
 
         flask.g.meetings = meetings
-
         flask.g.account_type = "instructor" if is_instructor() else "user"
 
     return flask.render_template('index.html')
@@ -119,7 +117,21 @@ def logout():
     return redirect(url_for('index'))
 
 
-@APP.route("/meeting/<meeting_hash>", methods=["GET"])
+def generate_availability(meeting_length,
+                          free_events):
+    availability = []
+
+    for free_event in free_events:
+        tmp_start = arrow.get(free_event['start'], "YYYY-MM-DDTHH:mm:ssZZ")
+        tmp_end = arrow.get(free_event['end'], "YYYY-MM-DDTHH:mm:ssZZ")
+        while tmp_start < tmp_end:
+            availability.append(tmp_start.format('YYYY-MM-DDTHH:mm:ssZZ'))
+            tmp_start = tmp_start.replace(minutes=+15)
+
+    return availability
+
+
+@APP.route("/meeting/<meeting_hash>", methods=["GET", "POST"])
 def meeting_planner(meeting_hash):
     """Serve the address_book.html page
 
@@ -134,12 +146,57 @@ def meeting_planner(meeting_hash):
     if not meeting:
         return redirect(url_for('index', error="You are not allowed to access this!"))
 
+
+    flask.g.meeting = meeting
+    flask.g.meeting_hash = meeting_hash
+
+    meeting_owner = MONGO_CLIENT.get_meeting_owner(meeting_id=meeting_id)
+    instructor_calendar = MONGO_CLIENT.get_calendar_data(registered_id=meeting_owner,
+                                                         meeting_id=meeting_id)
+
+    flask.g.my_calendar = MONGO_CLIENT.get_calendar_data(registered_id=flask.session['id'],
+                                                         meeting_id=meeting_id)
+
+    flask.g.instructor_calendar = instructor_calendar
+
+    if flask.request.method == 'POST':
+        calendar_data = MONGO_CLIENT.get_all_calendar_data(meeting_id=meeting_id)
+
+
+        instructor_availability = generate_availability(meeting_length=15,
+                                                        free_events=instructor_calendar['free_times'])
+
+
+        users = []
+        user_availability = []
+        for calendar in calendar_data[:]:
+            # Instructors calendar, remove it from list
+            if calendar['registered_id'] == flask.session['id']:
+                continue
+
+            users.append(calendar['registered_id'])
+
+            for free_event in calendar['free_times']:
+                tmp_start = arrow.get(free_event['start'], "YYYY-MM-DDTHH:mm:ssZZ")
+                tmp_end = arrow.get(free_event['end'], "YYYY-MM-DDTHH:mm:ssZZ")
+                while tmp_start < tmp_end:
+                    user_availability.append([calendar['registered_id'], tmp_start.format('YYYY-MM-DDTHH:mm:ssZZ')])
+                    tmp_start = tmp_start.replace(minutes=+15)
+
+
+        all_calendars = EventSchedules(users=users,
+                                       user_availability=user_availability,
+                                       instructor_availability=instructor_availability)
+
+        flask.g.instructor_availability = instructor_availability
+        flask.g.user_availability = user_availability
+        flask.g.all_calendars = all_calendars.generate_all_calendars()
+
     flask.session['callbackURL'] = 'arranger'
     flask.session['callback_url'] = request.url
 
-    if valid_oauth2_credentials():
-        gcal_service = get_gcal_service(valid_oauth2_credentials())
-        flask.session['calendarList'] = list_calendars(gcal_service)
+    if GoogleAPI.is_verified():
+        flask.session['calendarList'] = GoogleAPI.get_all_calendars()
         flask.g.calendars = flask.session['calendarList']
 
         primary_email = ""
@@ -149,23 +206,36 @@ def meeting_planner(meeting_hash):
                 break
         flask.session['primaryEmail'] = primary_email
 
-    flask.g.meeting = meeting
-    flask.g.meeting_hash = meeting_hash
-
     if is_instructor():
-        all_users = MONGO_CLIENT.get_users(username_regex=".*")
-        flask.g.possible_users = all_users
+        id_to_username_map = {}
 
-        calendar_data = MONGO_CLIENT.get_calendar_data(meeting_id=meeting_id)
+        all_users = MONGO_CLIENT.get_users(username_regex=".*")
+        
+        awaiting_participants = copy.copy(meeting['participants'])
+
+        calendar_data = MONGO_CLIENT.get_all_calendar_data(meeting_id=meeting_id)
+        for calendar in calendar_data[:]:
+            # Instructors calendar, remove it from list
+            if calendar['registered_id'] == flask.session['id']:
+                calendar_data.remove(calendar)
+                break
+
         for calendar in calendar_data:
-            # FIXME: can't use `get_user_username` because we can't tell the difference between instructor calendars
-            # and user calendars
             calendar['username'] = MONGO_CLIENT.get_user_username(user_id=calendar['registered_id'])
+            awaiting_participants.remove(calendar['registered_id'])
+            
+        for participant in meeting['participants']:
+            id_to_username_map[participant] = MONGO_CLIENT.get_user_username(user_id=participant)
+
+        flask.g.awaiting_participants = awaiting_participants
+        flask.g.id_to_username_map = id_to_username_map
         flask.g.calendar_data = calendar_data
+        flask.g.possible_users = all_users
 
         return flask.render_template('instructor_meeting_planner.html')
     else:
         return flask.render_template('user_meeting_planner.html')
+
 
 @APP.route('/_select_calendars', methods=['POST'])
 def select_calendars():
@@ -180,32 +250,23 @@ def select_calendars():
         return jsonify(error=True,
                        message="Invalid submission.")
 
-    credentials = valid_oauth2_credentials()
-    if not credentials:
+    if not GoogleAPI.is_verified():
         return flask.redirect(flask.url_for('oauth2callback'))
 
-    gcal_service = get_gcal_service(credentials)
+    begin_time = arrow.get(interpret_time("00:00"))
+    end_time = arrow.get(interpret_time("23:59"))
 
-    begin_time = arrow.get(interpret_time("8am"))
-    end_time = arrow.get(interpret_time("5pm"))
-
-    now = arrow.now('local')
-    tomorrow = now.replace(days=+1)
-    nextweek = now.replace(days=+7)
-    flask.session["begin_date"] = tomorrow.floor('day').isoformat()
-    flask.session["end_date"] = nextweek.ceil('day').isoformat()
+    meeting_begin_date = interpret_date(meeting['meeting_start'])
+    meeting_end_date = interpret_date(meeting['meeting_end'])
 
     free_times = []
     databaseEntry = []
     for calendar in request.form.getlist('calendarList[]'):
-        eventList = gcal_service.events().list(
-            calendarId=calendar,
-            timeMin=arrow.get(flask.session['begin_date']).replace(hour=begin_time.hour,
-                                                                   minute=begin_time.minute).isoformat(),
-            timeMax=arrow.get(flask.session['end_date']).replace(hour=end_time.hour,
-                                                                 minute=end_time.minute),
-            singleEvents=True,
-            orderBy='startTime').execute()
+        eventList = GoogleAPI.get_all_events(calendar=calendar,
+                                             date_start=arrow.get(meeting_begin_date).replace(hour=begin_time.hour,
+                                                          minute=begin_time.minute).isoformat(),
+                                             date_end=arrow.get(meeting_end_date).replace(hour=end_time.hour,
+                                                        minute=end_time.minute))
 
         for item in eventList['items']:
             if('transparency' not in item or
@@ -224,10 +285,10 @@ def select_calendars():
 
             item_start = arrow.get(item['start']['dateTime'])
             item_end = arrow.get(item['end']['dateTime'])
-            begin_date = arrow.get(item_start).replace(hour=begin_time.hour,
+            test_date = arrow.get(item_start).replace(hour=begin_time.hour,
                                                        minute=begin_time.minute)
             end_date = arrow.get(item_end).replace(hour=end_time.hour, minute=end_time.minute)
-            if item_end <= begin_date or item_start >= end_date:
+            if item_end <= test_date or item_start >= end_date:
                 continue
 
             to_append = {
@@ -238,18 +299,14 @@ def select_calendars():
 
             to_append['summary'] = item['summary'] if 'summary' in item else ''
             to_append['calendar'] = eventList['summary']
-            #toAppend['formattedDate'] = formatDates(arrow.get(toAppend['start']).isoformat(), arrow.get(toAppend['end']).isoformat())
             free_times.append(to_append)
 
     free_times = sorted(free_times, key=lambda k: k['start'])
-    #fullAgenda = agenda(flask.session['begin_date'], flask.session['end_date'], flask.session['begin_time'], flask.session['end_time'], busyTimes)
-    #flask.g.busyEvents = fullAgenda
-    flask.session['free_times'] = databaseEntry
 
-
-    MONGO_CLIENT.update_calendar_times(meeting_id,
-                                       flask.session['id'],
-                                       free_times)
+    MONGO_CLIENT.update_calendar_times(meeting_id=meeting_id,
+                                       registered_id=flask.session['id'],
+                                       email=flask.session['primaryEmail'],
+                                       free_times=free_times)
 
     return flask.redirect(flask.session['callback_url'])
 
@@ -339,6 +396,123 @@ def instructor_login():
     flask.session['is_admin'] = instructor_data['is_admin']
 
     return jsonify(redirect=url_for('index'))
+
+
+@APP.route("/_update_meeting_info", methods=["POST"])
+def update_meeting_info():
+    """
+
+
+    """
+    if not is_logged_in() or not is_instructor():
+        return jsonify(redirect=url_for('index'))
+
+    if 'meeting_planner_hash' not in request.form:
+        return jsonify(error=True,
+                       message="Invalid submission.")
+
+    meeting_id = request.form['meeting_planner_hash']
+    meeting = MONGO_CLIENT.get_meeting(meeting_id=meeting_id)
+
+    if not meeting:
+        return jsonify(error=True,
+                       message="Invalid submission.")
+
+    if('meeting_description' not in request.form or
+       'meeting_start' not in request.form or
+       'meeting_end' not in request.form):
+        return jsonify(error=True,
+                       message="Invalid submission.")
+
+    new_description = request.form['meeting_description']
+    MONGO_CLIENT.update_meeting_description(meeting_id=meeting_id,
+                                            description=new_description
+                                            )
+
+    meeting_start = request.form['meeting_start']
+    meeting_end = request.form['meeting_end']
+    MONGO_CLIENT.update_meeting_range(meeting_id=meeting_id,
+                                      meeting_start=meeting_start,
+                                      meeting_end=meeting_end
+                                     )
+
+    return jsonify(redirect=url_for('meeting_planner', meeting_hash=request.form['meeting_planner_hash']))
+
+
+
+@APP.route("/_finalize_meeting", methods=["POST"])
+def finalize_meeting():
+    """
+
+
+    """
+    if not is_logged_in() or not is_instructor():
+        return jsonify(redirect=url_for('index'))
+
+    if('meeting_planner_hash' not in request.form or
+       'calendar_events' not in request.form):
+        return jsonify(error=True,
+                       message="Invalid submission.")
+
+    meeting_id = request.form['meeting_planner_hash']
+    meeting = MONGO_CLIENT.get_meeting(meeting_id=meeting_id)
+    meeting['location'] = 'default' # FIXME: MAKE A VARIABLE IN DB
+
+    if not meeting:
+        return jsonify(error=True,
+                       message="Invalid submission.")
+
+    try:
+        calendar_events = json.loads(request.form.get('calendar_events'));
+    except Exception:
+        return jsonify(error=True,
+                       message="Invalid calendar data.")
+
+    # FIXME: Better redirect when gcal not authenticated
+    if not GoogleAPI.is_verified():
+        return redirect(url_for('oauth2callback'))
+
+    meeting_owner = MONGO_CLIENT.get_meeting_owner(meeting_id=meeting_id)
+    instructor_calendar = MONGO_CLIENT.get_calendar_data(registered_id=meeting_owner,
+                                                         meeting_id=meeting_id)
+
+    calendar_data = MONGO_CLIENT.get_all_calendar_data(meeting_id=meeting_id)
+
+
+    meeting_times = {}
+    for calendar_event in calendar_events:
+        meeting_times[calendar_event['id']] = {
+            "start": calendar_event['start'],
+            "end": calendar_event['end']
+        }
+
+    for calendar in calendar_data[:]:
+        if(calendar['registered_id'] not in meeting_times):
+            continue
+
+        email_list = []
+        email_list.append({
+            'email': instructor_calendar['email']
+        })
+        email_list.append({
+            'email': calendar['email']
+        })
+
+        meeting_start = arrow.get(meeting_times[calendar['registered_id']]['start']).replace(tzinfo=tz.tzlocal())
+        meeting_end = arrow.get(meeting_times[calendar['registered_id']]['end']).replace(tzinfo=tz.tzlocal())
+
+        GoogleAPI.create_event(summary=meeting["name"],
+                               location=meeting["location"],
+                               description=meeting["description"],
+                               start=meeting_start.isoformat(),
+                               end=meeting_end.isoformat(),
+                               attendees=email_list)
+
+        flask.session['redirect_message'] = {
+            "message": "Your meetings have been scheduled."
+        }
+
+    return jsonify(redirect=url_for('meeting_planner', meeting_hash=request.form['meeting_planner_hash']))
 
 
 @APP.route("/_update_meeting_participants", methods=["POST"])
@@ -436,11 +610,9 @@ def get_user_calendars():
            'callbackURL' in flask.session and flask.session['callbackURL'] == 'arranger'):
             return flask.redirect(flask.url_for('oauth2callback'))
     else:
-        return flask.redirect(flask.url_for('oauth2callback', scopeType=SCOPES_MODIFY))
+        return flask.redirect(flask.url_for('oauth2callback', scopeType=GoogleAPI.SCOPES_MODIFY))
 
-    gcal_service = get_gcal_service(credentials)
-
-    flask.session['calendarList'] = list_calendars(gcal_service)
+    flask.session['calendarList'] = GoogleAPI.get_all_calendars()
     flask.g.calendars = flask.session['calendarList']
     
     primaryEmail = ""
@@ -461,7 +633,7 @@ def valid_oauth2_credentials():
     if 'credentials' not in flask.session:
         return None
 
-    credentials = client.OAuth2Credentials.from_json(flask.session['credentials'])
+    credentials = GoogleAPI.get_oauth2_credentials()
 
     if(credentials.invalid or
        credentials.access_token_expired):
@@ -470,23 +642,8 @@ def valid_oauth2_credentials():
     return credentials
 
 
-
-def get_gcal_service(credentials):
-  """
-  We need a Google calendar 'service' object to obtain
-  list of calendars, busy times, etc.  This requires
-  authorization. If authorization is already in effect,
-  we'll just return with the authorization. Otherwise,
-  control flow will be interrupted by authorization, and we'll
-  end up redirected back to /choose *without a service object*.
-  Then the second call will succeed without additional authorization.
-  """
-  http_auth = credentials.authorize(httplib2.Http())
-  service = discovery.build('calendar', 'v3', http=http_auth)
-  return service
-
 @APP.route('/oauth2callback')
-def oauth2callback(scopeType=SCOPES_READONLY):
+def oauth2callback(scopeType=GoogleAPI.SCOPES_READONLY):
     """
     The 'flow' has this one place to call back to.  We'll enter here
     more than once as steps in the flow are completed, and need to keep
@@ -494,31 +651,17 @@ def oauth2callback(scopeType=SCOPES_READONLY):
     step, the second time we'll skip the first step and do the second,
     and so on.
     """
-    flow =  client.flow_from_clientsecrets(
-        CLIENT_SECRET_FILE,
-        scope= SCOPES_MODIFY,
-        redirect_uri=flask.url_for('oauth2callback', _external=True))
-    ## Note we are *not* redirecting above.  We are noting *where*
-    ## we will redirect to, which is this function. 
-
-    ## The *second* time we enter here, it's a callback 
-    ## with 'code' set in the URL parameter.  If we don't
-    ## see that, it must be the first time through, so we
-    ## need to do step 1. 
     if 'code' not in flask.request.args:
-        auth_uri = flow.step1_get_authorize_url()
-        return flask.redirect(auth_uri)
-    ## This will redirect back here, but the second time through
-    ## we'll have the 'code' parameter set
+        return flask.redirect(GoogleAPI.get_auth_uri(redirect_uri=flask.url_for('oauth2callback',
+                                                                                _external=True)))
     else:
-        ## It's the second time through ... we can tell because
-        ## we got the 'code' argument in the URL.
         auth_code = flask.request.args.get('code')
-        credentials = flow.step2_exchange(auth_code)
-        flask.session['credentials'] = credentials.to_json()
-        ## Now I can build the service and execute the query,
-        ## but for the moment I'll just log it and go back to
-        ## the main screen
+
+        flask.session['credentials'] = GoogleAPI.get_credentials(
+            redirect_uri=flask.url_for('oauth2callback',
+                                       _external=True),
+            auth_code=auth_code)
+
         return flask.redirect(flask.session['callback_url'])
 
 ##############################
@@ -526,6 +669,19 @@ def oauth2callback(scopeType=SCOPES_READONLY):
 #   Helper Functions
 #
 ##############################
+def interpret_date(text):
+    """
+    Convert text of date to ISO format used internally,
+    with the local time zone.
+    """
+    try:
+      as_arrow = arrow.get(text, "MM/DD/YYYY").replace(
+          tzinfo=tz.tzlocal())
+    except:
+        flask.flash("Date '{}' didn't fit expected format 12/31/2001")
+        raise
+    return as_arrow.isoformat()
+
 def interpret_time( text ):
     """
     Read time in a human-compatible format and
@@ -542,54 +698,6 @@ def interpret_time( text ):
               .format(text))
         raise
     return as_arrow.isoformat()
-
-def list_calendars(service):
-    """
-    Given a google 'service' object, return a list of
-    calendars.  Each calendar is represented by a dict.
-    The returned list is sorted to have
-    the primary calendar first, and selected (that is, displayed in
-    Google Calendars web app) calendars before unselected calendars.
-    """
-    calendar_list = service.calendarList().list().execute()["items"]
-    result = [ ]
-    for cal in calendar_list:
-        kind = cal["kind"]
-        id = cal["id"]
-        if "description" in cal: 
-            desc = cal["description"]
-        else:
-            desc = "(no description)"
-        summary = cal["summary"]
-        # Optional binary attributes with False as default
-        selected = ("selected" in cal) and cal["selected"]
-        primary = ("primary" in cal) and cal["primary"]
-        
-
-        result.append(
-          { "kind": kind,
-            "id": id,
-            "summary": summary,
-            "selected": selected,
-            "primary": primary
-            })
-    return sorted(result, key=cal_sort_key)
-
-def cal_sort_key( cal ):
-    """
-    Sort key for the list of calendars:  primary calendar first,
-    then other selected calendars, then unselected calendars.
-    (" " sorts before "X", and tuples are compared piecewise)
-    """
-    if cal["selected"]:
-       selected_key = " "
-    else:
-       selected_key = "X"
-    if cal["primary"]:
-       primary_key = " "
-    else:
-       primary_key = "X"
-    return (primary_key, selected_key, cal["summary"])
 
 def error_and_redirect(error, page):
     flask.session["error"] = error

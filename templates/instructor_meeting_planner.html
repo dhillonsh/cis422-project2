@@ -1,49 +1,65 @@
 {% extends "base.html" %}
 {% block body %}
-<div class="container">
+
+<div class="container" style="text-align: center;">
   <ul class="nav nav-tabs">
-  	<li class="active"><a data-toggle="tab" href="#calendar_menu">Select Calendars</a></li>
+  	<li {% if g.all_calendars is not defined %}class="active"{% endif %}><a data-toggle="tab" href="#calendar_menu">Select Calendars</a></li>
+  	<li><a data-toggle="tab" href="#info_menu">Edit Info</a></li>
     <li><a data-toggle="tab" href="#add_user_menu">Edit Participants</a></li>
-    <li ><a data-toggle="tab" href="#finalize_meeting_menu">Finalize Meeting</a></li>
+    <li {% if g.all_calendars is defined %}class="active"{% endif %}><a data-toggle="tab" href="#finalize_meeting_menu">Finalize Meeting</a></li>
   </ul>
 
 <div class="tab-content">
-	<div id="calendar_menu" class="tab-pane fade in active">
+	<div id="calendar_menu" class="tab-pane{% if g.all_calendars is not defined %} fade in active{% endif %}">
+		<h2 class="text-center">Calendar Selection</h2>
+
+		{% if g.meeting.meeting_start %}
+			<div class="form-group">
+				<form action="/_get_user_calendars" method="POST">
+					<input type="submit" class="btn btn-default" value="Get Calendars" />
+				</form>
+			</div>
+
+			{% if g.calendars is defined %}
+			<div class="form-group">
+				<h3 class="text-center">Select which calendars to pull events from:</h3>
+				<form action="/_select_calendars" method="POST">
+				{% for cal in g.calendars %}
+	  				<input type="checkbox" id="calendarList" name="calendarList[]" value="{{ cal.id }}" /> {{ cal.summary }}
+				{% endfor %}
+					<br>
+					<input type="hidden" name="meeting_planner_hash" id="meeting_planner_hash" value="{{ g.meeting_hash }}" />
+					<input type="submit" class="btn btn-default" value="Select Calendars" />
+				</form>
+			</div>
+			{% endif %}
+
+			{% if g.my_calendar is defined and g.my_calendar is not none %}
+				<div id='my_availability_calendar'></div>
+			{% endif %}
+		{% else %}
+		<p>You must first set a meeting date range before authorizing your Google Calendar.</p>
+
+		{% endif %}
+	</div>
+	<div id="info_menu" class="tab-pane">
+		<h2 class="text-center">Edit Info</h2>
 		<div class="form-group">
-			<form action="/_get_user_calendars" method="POST">
-				<input type="submit" value="Get Calendars" />
+			<form id="info_form" method="POST" action="/_update_meeting_info">
+				<table id="info_table" class="table">
+					<tbody>
+						<tr>
+							<td>Description:</td>
+							<td><input type="text" name="meeting_description" value="{{ g.meeting['description'] }}" /></td>
+						<tr>
+							<td>Meeting Date Range</td>
+							<td><input type="text" id="daterange" name="meeting_date_range" size="12" {% if g.meeting.meeting_start %}value="{{ g.meeting.meeting_start }} - {{ g.meeting.meeting_end }}"{% endif %} class="pull-down" style="background: #fff; cursor: pointer; padding: 5px 10px; border: 1px solid #ccc; width: 12em" ></td>
+					</tbody>
+				</table>
+				<input type="hidden" id="meeting_planner_hash" name="meeting_planner_hash" value="{{ g.meeting_hash }}" />
+				<input type="submit" class="btn btn-default" value="Save" />
 			</form>
 		</div>
-
-		{% if g.calendars is defined %}
-		<div class="form-group">
-			<form action="/_select_calendars" method="POST">
-			{% for cal in g.calendars %}
-  				<input type="checkbox" id="calendarList" name="calendarList[]" value="{{ cal.id }}" /> {{ cal.summary }}
-			{% endfor %}
-				<br>
-				<input type="hidden" name="meeting_planner_hash" id="meeting_planner_hash" value="{{ g.meeting_hash }}" />
-				<input type="submit" value="Submit" />
-			</form>
-		</div>
-		{% endif %}
-
-		{% if session.free_times is defined %}
-			Your busy times:
-			<table class="table">
-				<thead>
-					<th>Start</th>
-					<th>End</th>
-				</thead>
-				<tbody>
-					{% for event in session.free_times %}
-					<tr>
-						<td>{{ event['start'] }}</td>
-						<td>{{ event['end'] }}</td>
-					{% endfor %}
-				</tbody>
-			</table>
-		{% endif %}
 	</div>
 	<div id="add_user_menu" class="tab-pane">
 		<h2 class="text-center">Edit Participants</h2>
@@ -75,31 +91,70 @@
 			</form>
 		</div>
 	</div>
-	<div id="finalize_meeting_menu" class="tab-pane">
-		{% for calendar in g.calendar_data %}
-		<h3>{{ calendar.username }}</h3>
-		<table>
-			<thead>
-				<th>Free From</th>
-				<th>Free To</th>
-			</thead>
-			<tbody>
-				{% for free_time in calendar.free_times %}
-				<tr>
-					<td>{{ free_time['start'] }}</td>
-					<td>{{ free_time['end'] }}</td>
-				{% endfor %}
-			</tbody>
-		</table>
-		{% endfor %}
+	<div id="finalize_meeting_menu" class="tab-pane{% if g.all_calendars is defined %} fade in active{% endif %}">
+		<h2 class="text-center">Finalize</h2>
+		{% if not g.instructor_calendar %}
+			<p>You have not synced your Google Calendar events yet!</p>
+		{% elif not g.meeting.meeting_start %}
+			<p>You must first set a meeting date range before finalizing this meeting.</p>
+		{% else %}
+			{% if g.calendar_data %}
+				<div class="col-xs-6">
+					<table class="table">
+						<th>Received responses from:</th>
 
+						{% for calendar in g.calendar_data %}
+						<tr>
+							<td>{{ calendar.username }}</td>
+						{% endfor %}
+					</table>
+				</div>
+				<div class="col-xs-6">
+					<table class="table">
+						<thead>
+							<th>Awaiting responses from:</th>
+						</thead>
+						<tbody>
+							{% for participant in g.awaiting_participants %}
+							<tr>
+								<td>{{ g.id_to_username_map[participant] }}</td>
+							{% endfor %}
+						</tbody>
+					</table>
+				</div>
 
-		<div class="form-group">
-			<form id="finalize_form" method="POST" action="/_finalize_meeting">
-				<input type="hidden" id="meeting_planner_hash" name="meeting_planner_hash" value="{{ g.meeting_hash }}" />
-				<input type="submit" class="btn btn-default" value="Finalize this meeting" />
-			</form>
-		</div>
+				{% if g.all_calendars is not defined %}
+				<div class="col-xs-12">
+					<div class="form-group">
+						<form id="generate_calendars_form" method="POST" action="">
+							<input type="hidden" id="meeting_planner_hash" name="meeting_planner_hash" value="{{ g.meeting_hash }}" />
+							<input type="submit" class="btn btn-default" value="Generate potential calendars" />
+						</form>
+					</div>
+				</div>
+				{% endif %}
+
+				{% if g.all_calendars is defined %}	
+				<div class="col-xs-12">	
+					<div class="form-group">
+						<div id='generated_calendar'></div>
+						<br>
+						<input type="button" id="previous_calendar" class="btn btn-default" value="Previous Calendar" disabled />
+						<input type="button" id="next_calendar" class="btn btn-default" value="Next Calendar" />
+						<input type="hidden" id="generated_calendar_index" value="0" />
+						<br>
+						<form id="finalize_form" method="POST" action="/_finalize_meeting">
+							<input type="hidden" id="meeting_planner_hash" name="meeting_planner_hash" value="{{ g.meeting_hash }}" />
+							<br>
+							<input type="submit" class="btn btn-default" value="Schedule this meeting" />
+						</form>
+					</div>
+				</div>
+				{% endif %}
+			{% else %}
+				<p>No calendars have been submitted.</p>
+			{% endif %}
+		{% endif %}
 	</div>
 </div>
 
@@ -109,28 +164,180 @@
 {% block scripts %}
 {{ super() }}
 
+{% if g.my_calendar is defined %}
 <script type="text/javascript">
 $(function() {
-	$('#address_book_entries_table > tbody').sortable({
-		update: function(event, ui) {
-			set_recent_changes();
+	function generate_calendar_events(calendar) {
+		calendar_events = [];
+		for(var i = 0; i < calendar.length; i++) {
+			calendar_events.push({
+				title: "Available",
+				start: calendar[i]['start'],
+				end: calendar[i]['end']
+			});
+		}
+		return calendar_events;
+	}
+
+	$('#my_availability_calendar').fullCalendar({
+		header: {
+			left: 'prev,next today',
+			center: 'title',
+			right: 'month,agendaWeek,agendaDay'
+		},
+		defaultView: 'agendaWeek',
+		defaultDate: moment("{{ g.meeting.meeting_start|safe }}", "MM/DD/YYYY").format('YYYY-MM-DD'),
+		editable: false,
+		minTime: "06:00:00",
+		maxTime: "21:00:00",
+	    validRange: {
+			start: moment("{{ g.meeting.meeting_start|safe }}", "MM/DD/YYYY").format('YYYY-MM-DD'),
+			end: moment("{{ g.meeting.meeting_end|safe }}", "MM/DD/YYYY").format('YYYY-MM-DD')
+		},
+		eventRender: function(event, element) {
+			$(element).tooltip({
+				title: event.title
+			});
+		},
+		events: generate_calendar_events({{ g.my_calendar.free_times|safe }})
+	});
+});
+</script>
+{% endif %}
+
+{% if g.all_calendars is defined %}
+<script type="text/javascript">
+$(function() {
+	instructor_availability = {{ g.instructor_availability|safe }};
+	user_availability = {{ g.user_availability|safe }};
+	id_to_username_map = {{ g.id_to_username_map|safe }};
+	all_calendars = {{ g.all_calendars|safe }};
+
+	if(all_calendars.length <= 1) {
+		$('#next_calendar').hide();
+	}
+
+	$('#generated_calendar').fullCalendar({
+		header: {
+			left: 'prev,next today',
+			center: 'title',
+			right: 'month,agendaWeek,agendaDay'
+		},
+		defaultView: 'agendaWeek',
+		defaultDate: moment("{{ g.meeting.meeting_start|safe }}", "MM/DD/YYYY").format('YYYY-MM-DD'),
+		editable: false,
+		minTime: "06:00:00",
+		maxTime: "21:00:00",
+	    validRange: {
+			start: moment("{{ g.meeting.meeting_start|safe }}", "MM/DD/YYYY").format('YYYY-MM-DD'),
+			end: moment("{{ g.meeting.meeting_end|safe }}", "MM/DD/YYYY").format('YYYY-MM-DD')
+		},
+		eventRender: function(event, element) {
+			$(element).tooltip({
+				title: event.title
+			});
+		},
+		events: generate_calendar_events().concat(get_available_events(instructor_availability))
+	});
+
+	function get_available_events(calendar) {
+		available_events = [];
+		for(i = 0; i < calendar.length; i++) {
+			available_events.push({
+				start: moment(calendar[i]).format("YYYY-MM-DDTHH:mm:ssZZ"),
+				end: moment(calendar[i]).add(15, "minutes").format("YYYY-MM-DDTHH:mm:ssZZ"),
+				rendering: 'background'
+			});
+		}
+		return available_events;
+	}
+
+	function generate_calendar_events() {
+		var calendar_index = parseInt($('#generated_calendar_index').val());
+
+		calendar_events = [];
+		for(var time_slot in all_calendars[calendar_index]) {
+			var user_index = all_calendars[calendar_index][time_slot];
+			var user_id = user_availability[user_index][0];
+
+			calendar_events.push({
+				title: id_to_username_map[user_id],
+				id: user_id,
+				start: instructor_availability[time_slot],
+				end: moment(instructor_availability[time_slot]).add(15, "minutes").format("YYYY-MM-DDTHH:mm:ssZZ")
+			});
+		}
+		return calendar_events;
+	}
+
+	function rerender_calendar(calendar_id) {
+		$('#' + calendar_id).fullCalendar('removeEvents');
+		$('#' + calendar_id).fullCalendar('addEventSource', generate_calendar_events().concat(get_available_events(instructor_availability)));         
+		$('#' + calendar_id).fullCalendar('rerenderEvents');
+	}
+
+	$('#next_calendar').on('click', function() {
+		var next_index = parseInt($('#generated_calendar_index').val()) + 1;
+
+		if(next_index <= all_calendars.length - 1) {
+			$('#generated_calendar_index').val(next_index);
+			if($('#previous_calendar').is(':disabled')) $('#previous_calendar').prop("disabled", false);
+
+			if(next_index == all_calendars.length - 1 && !$('#next_calendar').is(':disabled')) $('#next_calendar').prop("disabled", true);
+			rerender_calendar('generated_calendar');
+		}
+	});
+	$('#previous_calendar').on('click', function() {
+		var previous_index = parseInt($('#generated_calendar_index').val()) - 1;
+
+		if(previous_index >= 0) {
+			$('#generated_calendar_index').val(previous_index);
+			if($('#next_calendar').is(':disabled')) $('#next_calendar').prop("disabled", false);
+
+			if(previous_index == 0 && !$('#previous_calendar').is(':disabled')) $('#previous_calendar').prop("disabled", true);
+			rerender_calendar('generated_calendar');
 		}
 	});
 
-	$('#force_save_button').on('click', function() {
-		$('#force_save_switch').val('1');
-		$('#address_book_entries_form').trigger('submit');
-	});
+	$('form[id="finalize_form"]').submit(function(e) {
+		var data = $(this).closest('form').serializeArray();
+		data.push({
+			name: "calendar_events", value: JSON.stringify(generate_calendar_events())
+		});
 
-	$('input').on('change', function() {
-		set_recent_changes();
-	});
+		$.ajax({
+			type: "POST",
+			url: $(this).attr('action'),
+			context: $(this),
+			data: $.param(data),
+			dataType: "json",
+			complete: function() {
 
-
-	$('#return_home_button').on('click', function() {
-		if(get_recent_changes() == "1") $('#return_home_modal').modal('toggle');
-		else go_home();
+			},
+			success: function (result) {
+				showError(result);
+			}
+		});
+		e.preventDefault();
 	});
+});
+</script>
+{% endif %}
+
+<script type="text/javascript">
+$(function() {
+	$('input[id="daterange"]').daterangepicker({
+		ranges: {
+			'Today': [moment(), moment()],
+           'Tomorrow':[moment().add(1, 'days'),
+                       moment().add(1, 'days')], 
+           'This week':[moment(), moment().endOf('week')],
+           'Next week':[moment().add(7, 'days').startOf('week'),
+                        moment().add(7, 'days').endOf('week')],
+           'This month':[moment(), moment().endOf('month')],
+           'Within two weeks':[moment(),moment().add(15, 'days')]
+		}}
+	);
 
 	$('#add_participant_button').click(function() {
 		var table = $(this).closest('form').find('table');
@@ -148,6 +355,32 @@ $(function() {
 		table.find('tbody > tr:last').find('select[class="selectpicker"]').selectpicker('render');
 	});
 
+	$('form[id="info_form"]').submit(function(e) {
+		var meeting_date_range = $(this).closest('form').find('input[name="meeting_date_range"]').val().split(' - ');
+
+		var data = $(this).closest('form').serializeArray();
+		data.push({
+			name: "meeting_start", value: meeting_date_range[0]
+		});
+		data.push({
+			name: "meeting_end", value: meeting_date_range[1]
+		});
+
+		$.ajax({
+			type: "POST",
+			url: $(this).attr('action'),
+			context: $(this),
+			data: $.param(data),
+			dataType: "json",
+			complete: function() {
+
+			},
+			success: function (result) {
+				showError(result);
+			}
+		});
+		e.preventDefault();
+	});
 
 	$('form[id="participants_form"]').submit(function(e) {
 		$.ajax({
@@ -164,92 +397,6 @@ $(function() {
 			}
 		});
 		e.preventDefault();
-	});
-
-	$('form[id="address_book_entries_form"]').submit(function(e) {
-		fields = [];
-		entries = [];
-
-		/* Using the <th> of the entries table, formulate a list of all the fields */
-		$('#address_book_entries_table > thead > tr:first > th:not(:first-child)').each(function (i, table_header) {
-			fields.push($(table_header).html());
-		});
-
-		/* Iterate through each row of the entries list and create a list per entry. Each sublist
-		is composed of the row's columns. */
-		$('#address_book_entries_table > tbody > tr').each(function (i, table_row) {
-			entry_fields = [];
-			$(table_row).find('td:not(:first-child)').each(function (i2, table_column) {
-				input_box = $(table_column).find('input');
-				if(!input_box.length) return true;
-
-				var input_value = $(input_box[0]).val();
-
-				//Special character stripping for phone numbers.
-				if($(input_box[0]).attr('field') == "phone") {
-					input_value = input_value.replace(/[- )(]/g,'');
-				}
-				entry_fields.push(input_value);
-			});
-			if(!entry_fields.length) return true;
-
-			entries.push(entry_fields);
-		});
-
-		var force_save_switch = $('#force_save_switch').val();
-
-		$.ajax({
-			type: "POST",
-			url: "/_update_address_book_entries",
-			context: $(this),
-			data: {
-				"fields": JSON.stringify(fields),
-				"entries": JSON.stringify(entries),
-				"address_book_hash": $("#address_book_hash").val(),
-				"force_save": force_save_switch
-			},
-			dataType: "json",
-			complete: function() {
-
-			},
-			success: function (result) {
-				if('error' in result) {
-					if(force_save_switch == "0") {
-						$('#save_errors_table > tbody').empty();
-
-						result['errors'].forEach(function(error) {
-							$('#save_errors_table > tbody')
-								.append($('<tr>')
-									.append($('<td>')
-										.html(error['entry_id'])
-									)
-									.append($('<td>')
-										.html(error['message'])
-									)
-								);
-						});
-
-						$('#force_save_modal').modal('show');
-					}
-					unset_recent_changes();
-				} else showError(result);
-				$("#force_save_switch").val('0');
-			}
-		});
-		e.preventDefault();
-	});
-
-	$('#add_entries_button').click(function() {
-		var table = $(this).closest('form').find('table');
-
-		new_row_html = '<td><button data-toggle="modal" data-target="#delete_row_modal" onClick="delete_confirm(this)" type="button" class="btn btn-danger">Delete</button></td>';
-
-		{% for book_field in g.address_book_fields %}
-			new_row_html += '<td><input class="form-control" type="text" name="address_book_entries_{{ loop.index0 }}[]" value="" /></td>';
-		{% endfor %}
-
-		new_row = $('<tr>').html(new_row_html);
-		table.find('tbody').append(new_row);
 	});
 });
 </script>
